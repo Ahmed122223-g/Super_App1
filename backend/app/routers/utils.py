@@ -6,24 +6,56 @@ import shutil
 import os
 import uuid
 from typing import Dict
+import magic
 
 router = APIRouter()
 
 UPLOAD_DIR = "static/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Allowed MIME types for images
+ALLOWED_MIME_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp"
+}
+
+def validate_file_content(file_content: bytes) -> str:
+    """
+    Validate file content using magic bytes (file signature).
+    Returns the correct extension if valid, raises HTTPException if invalid.
+    """
+    mime = magic.Magic(mime=True)
+    detected_mime = mime.from_buffer(file_content[:2048])  # Check first 2KB
+    
+    if detected_mime not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid file type: {detected_mime}. Only images are allowed."
+        )
+    
+    return ALLOWED_MIME_TYPES[detected_mime]
+
 def save_upload_file(file: UploadFile) -> str:
-    """Helper to save uploaded file and return URL path"""
-    if not file.content_type.startswith("image/"):
+    """Helper to save uploaded file and return URL path with magic bytes validation"""
+    # First check the declared content type
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     
-    extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    # Read file content for validation
+    file_content = file.file.read()
+    file.file.seek(0)  # Reset file pointer
+    
+    # Validate using magic bytes (actual file content)
+    extension = validate_file_content(file_content)
+    
     filename = f"{uuid.uuid4()}.{extension}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     
     try:
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(file_content)
         # Return secure API path instead of static path
         return f"/api/utils/files/{filename}"
     except Exception as e:
