@@ -814,6 +814,7 @@ class ApiService {
       return ApiResponse.success(response.data);
     } on DioException catch (e) {
       return _handleError(e);
+    }
   }
   
   /// Check if filename is an image
