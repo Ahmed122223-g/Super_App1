@@ -113,7 +113,7 @@ def send_support_email(contact: ContactMessage):
     """
     sender_email = settings.mail_username
     sender_password = settings.mail_password
-    recipient_email = "ahmedmohamed1442006m@gmail.com"
+    recipient_email = settings.support_email
     
     if not sender_email or not sender_password:
         logger.warning(f"⚠️ Email credentials missing (User: {sender_email}). Skipping email send.")

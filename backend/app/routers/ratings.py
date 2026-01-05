@@ -1,9 +1,10 @@
 """
 Jiwar Backend - Ratings Router
 Using separate databases for doctors and pharmacies ratings
+Refactored to use generic functions (DRY principle)
 """
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Type
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -21,6 +22,142 @@ from app.services.notifications import notify_new_rating
 
 router = APIRouter()
 
+
+# ==========================================
+# GENERIC RATING HELPERS (DRY)
+# ==========================================
+
+def create_entity_rating(
+    db: Session,
+    entity_model: Type,
+    rating_model: Type,
+    entity_id: int,
+    entity_id_field: str,
+    current_user: User,
+    rating_value: int,
+    comment: Optional[str],
+    is_anonymous: bool,
+    entity_type: str,
+    users_db: Session,
+    background_tasks: BackgroundTasks
+) -> tuple:
+    """
+    Generic function to create a rating for any entity (Doctor, Pharmacy, Teacher).
+    Returns (rating_object, entity_object).
+    """
+    # Find entity
+    entity = db.query(entity_model).filter(entity_model.id == entity_id).first()
+    if not entity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": f"{entity_type.upper()}_NOT_FOUND", "message": f"{entity_type.title()} not found"}
+        )
+    
+    # Create rating with dynamic field assignment
+    rating_data = {
+        entity_id_field: entity_id,
+        "user_id": current_user.id,
+        "user_name": current_user.name,
+        "rating": rating_value,
+        "comment": comment,
+        "is_anonymous": is_anonymous
+    }
+    rating = rating_model(**rating_data)
+    db.add(rating)
+    
+    # Calculate new average rating
+    id_filter = getattr(rating_model, entity_id_field) == entity_id
+    result = db.query(
+        func.avg(rating_model.rating),
+        func.count(rating_model.id)
+    ).filter(id_filter).first()
+    
+    total_ratings = (result[1] or 0) + 1
+    sum_ratings = ((result[0] or 0) * (result[1] or 0)) + rating_value
+    entity.rating = round(sum_ratings / total_ratings, 1)
+    entity.total_ratings = total_ratings
+    
+    db.commit()
+    db.refresh(rating)
+    
+    # Notify entity owner
+    entity_user = users_db.query(User).filter(
+        User.profile_id == entity.id, 
+        User.user_type == entity_type
+    ).first()
+    if entity_user:
+        background_tasks.add_task(notify_new_rating, users_db, entity_user, rating_value, entity_type)
+    
+    return rating, entity
+
+
+def get_entity_ratings(
+    db: Session,
+    entity_model: Type,
+    rating_model: Type,
+    entity_id: int,
+    entity_id_field: str,
+    entity_type: str,
+    sort: Optional[str] = None,
+    stars: Optional[int] = None
+) -> RatingListResponse:
+    """
+    Generic function to get ratings for any entity (Doctor, Pharmacy, Teacher).
+    """
+    # Find entity
+    entity = db.query(entity_model).filter(entity_model.id == entity_id).first()
+    if not entity:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": f"{entity_type.upper()}_NOT_FOUND", "message": f"{entity_type.title()} not found"}
+        )
+    
+    # Build query
+    id_filter = getattr(rating_model, entity_id_field) == entity_id
+    query = db.query(rating_model).filter(id_filter)
+    
+    if stars:
+        query = query.filter(rating_model.rating == stars)
+    
+    # Apply sorting
+    if sort == "newest":
+        query = query.order_by(rating_model.created_at.desc())
+    elif sort == "oldest":
+        query = query.order_by(rating_model.created_at.asc())
+    elif sort == "highest":
+        query = query.order_by(rating_model.rating.desc())
+    elif sort == "lowest":
+        query = query.order_by(rating_model.rating.asc())
+    else:
+        query = query.order_by(rating_model.created_at.desc())
+    
+    ratings = query.all()
+    
+    # Build response
+    rating_responses = []
+    for r in ratings:
+        rating_responses.append(RatingResponse(
+            id=r.id,
+            user_id=r.user_id,
+            user_name=r.user_name if not r.is_anonymous else "مجهول",
+            doctor_id=getattr(r, 'doctor_id', None),
+            pharmacy_id=getattr(r, 'pharmacy_id', None),
+            teacher_id=getattr(r, 'teacher_id', None),
+            rating=r.rating,
+            comment=r.comment,
+            created_at=r.created_at
+        ))
+    
+    return RatingListResponse(
+        ratings=rating_responses,
+        total=len(ratings),
+        average=entity.rating or 0.0
+    )
+
+
+# ==========================================
+# RATING ENDPOINTS
+# ==========================================
 
 @router.post("/", response_model=RatingResponse, status_code=status.HTTP_201_CREATED)
 async def create_rating(
@@ -48,158 +185,68 @@ async def create_rating(
             detail={"error_code": "MULTIPLE_TARGETS", "message": "Provide only one target"}
         )
     
-    # Rating for doctor
+    # Determine which entity to rate
     if request.doctor_id:
-        doctor = doctors_db.query(Doctor).filter(Doctor.id == request.doctor_id).first()
-        if not doctor:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error_code": "DOCTOR_NOT_FOUND", "message": "Doctor not found"}
-            )
-        
-        # Create rating
-        rating = DoctorRating(
-            doctor_id=request.doctor_id,
-            user_id=current_user.id,
-            user_name=current_user.name,
-            rating=request.rating,
+        rating, entity = create_entity_rating(
+            db=doctors_db,
+            entity_model=Doctor,
+            rating_model=DoctorRating,
+            entity_id=request.doctor_id,
+            entity_id_field="doctor_id",
+            current_user=current_user,
+            rating_value=request.rating,
             comment=request.comment,
-            is_anonymous=request.is_anonymous
+            is_anonymous=request.is_anonymous,
+            entity_type="doctor",
+            users_db=users_db,
+            background_tasks=background_tasks
         )
-        doctors_db.add(rating)
-        
-        # Update doctor average rating
-        result = doctors_db.query(
-            func.avg(DoctorRating.rating),
-            func.count(DoctorRating.id)
-        ).filter(DoctorRating.doctor_id == doctor.id).first()
-        
-        # Add the new rating to calculation
-        total_ratings = (result[1] or 0) + 1
-        sum_ratings = ((result[0] or 0) * (result[1] or 0)) + request.rating
-        doctor.rating = round(sum_ratings / total_ratings, 1)
-        doctor.total_ratings = total_ratings
-        
-        doctors_db.commit()
-        doctors_db.refresh(rating)
-        
-        # Notify Doctor
-        doctor_user = users_db.query(User).filter(User.profile_id == doctor.id, User.user_type == "doctor").first()
-        if doctor_user:
-            background_tasks.add_task(notify_new_rating, users_db, doctor_user, request.rating, "doctor")
-
         return RatingResponse(
-            id=rating.id,
-            user_id=rating.user_id,
-            user_name=rating.user_name,
-            doctor_id=rating.doctor_id,
-            pharmacy_id=None,
-            teacher_id=None,
-            rating=rating.rating,
-            comment=rating.comment,
-            created_at=rating.created_at
+            id=rating.id, user_id=rating.user_id, user_name=rating.user_name,
+            doctor_id=rating.doctor_id, pharmacy_id=None, teacher_id=None,
+            rating=rating.rating, comment=rating.comment, created_at=rating.created_at
         )
     
-    # Rating for pharmacy
     elif request.pharmacy_id:
-        pharmacy = pharmacies_db.query(Pharmacy).filter(Pharmacy.id == request.pharmacy_id).first()
-        if not pharmacy:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error_code": "PHARMACY_NOT_FOUND", "message": "Pharmacy not found"}
-            )
-        
-        # Create rating
-        rating = PharmacyRating(
-            pharmacy_id=request.pharmacy_id,
-            user_id=current_user.id,
-            user_name=current_user.name,
-            rating=request.rating,
+        rating, entity = create_entity_rating(
+            db=pharmacies_db,
+            entity_model=Pharmacy,
+            rating_model=PharmacyRating,
+            entity_id=request.pharmacy_id,
+            entity_id_field="pharmacy_id",
+            current_user=current_user,
+            rating_value=request.rating,
             comment=request.comment,
-            is_anonymous=request.is_anonymous
+            is_anonymous=request.is_anonymous,
+            entity_type="pharmacy",
+            users_db=users_db,
+            background_tasks=background_tasks
         )
-        pharmacies_db.add(rating)
-        
-        # Update pharmacy average rating
-        result = pharmacies_db.query(
-            func.avg(PharmacyRating.rating),
-            func.count(PharmacyRating.id)
-        ).filter(PharmacyRating.pharmacy_id == pharmacy.id).first()
-        
-        total_ratings = (result[1] or 0) + 1
-        sum_ratings = ((result[0] or 0) * (result[1] or 0)) + request.rating
-        pharmacy.rating = round(sum_ratings / total_ratings, 1)
-        pharmacy.total_ratings = total_ratings
-        
-        pharmacies_db.commit()
-        pharmacies_db.refresh(rating)
-        
-        # Notify Pharmacy
-        pharmacy_user = users_db.query(User).filter(User.profile_id == pharmacy.id, User.user_type == "pharmacy").first()
-        if pharmacy_user:
-            background_tasks.add_task(notify_new_rating, users_db, pharmacy_user, request.rating, "pharmacy")
-
         return RatingResponse(
-            id=rating.id,
-            user_id=rating.user_id,
-            user_name=rating.user_name,
-            doctor_id=None,
-            pharmacy_id=rating.pharmacy_id,
-            teacher_id=None,
-            rating=rating.rating,
-            comment=rating.comment,
-            created_at=rating.created_at
+            id=rating.id, user_id=rating.user_id, user_name=rating.user_name,
+            doctor_id=None, pharmacy_id=rating.pharmacy_id, teacher_id=None,
+            rating=rating.rating, comment=rating.comment, created_at=rating.created_at
         )
     
-    # Rating for teacher
-    else:
-        teacher = teachers_db.query(Teacher).filter(Teacher.id == request.teacher_id).first()
-        if not teacher:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error_code": "TEACHER_NOT_FOUND", "message": "Teacher not found"}
-            )
-        
-        # Create rating
-        rating = TeacherRating(
-            teacher_id=request.teacher_id,
-            user_id=current_user.id,
-            user_name=current_user.name,
-            rating=request.rating,
+    else:  # teacher_id
+        rating, entity = create_entity_rating(
+            db=teachers_db,
+            entity_model=Teacher,
+            rating_model=TeacherRating,
+            entity_id=request.teacher_id,
+            entity_id_field="teacher_id",
+            current_user=current_user,
+            rating_value=request.rating,
             comment=request.comment,
-            is_anonymous=request.is_anonymous
+            is_anonymous=request.is_anonymous,
+            entity_type="teacher",
+            users_db=users_db,
+            background_tasks=background_tasks
         )
-        teachers_db.add(rating)
-        
-        # Update teacher average rating
-        result = teachers_db.query(
-            func.avg(TeacherRating.rating),
-            func.count(TeacherRating.id)
-        ).filter(TeacherRating.teacher_id == teacher.id).first()
-        
-        total_ratings = (result[1] or 0) + 1
-        sum_ratings = ((result[0] or 0) * (result[1] or 0)) + request.rating
-        teacher.rating = round(sum_ratings / total_ratings, 1)
-        teacher.total_ratings = total_ratings
-        
-        teachers_db.commit()
-        teachers_db.refresh(rating)
-        
-        # Notify Teacher
-        teacher_user = users_db.query(User).filter(User.profile_id == teacher.id, User.user_type == "teacher").first()
-        if teacher_user:
-            background_tasks.add_task(notify_new_rating, users_db, teacher_user, request.rating, "teacher")
-
         return RatingResponse(
-            id=rating.id,
-            user_id=rating.user_id,
-            user_name=rating.user_name,
-            doctor_id=None,
-            pharmacy_id=None,
-            teacher_id=rating.teacher_id,
-            rating=rating.rating,
-            comment=rating.comment,
-            created_at=rating.created_at
+            id=rating.id, user_id=rating.user_id, user_name=rating.user_name,
+            doctor_id=None, pharmacy_id=None, teacher_id=rating.teacher_id,
+            rating=rating.rating, comment=rating.comment, created_at=rating.created_at
         )
 
 
@@ -211,47 +258,15 @@ async def get_doctor_ratings(
     doctors_db: Session = Depends(get_doctors_db)
 ):
     """Get all ratings for a doctor"""
-    doctor = doctors_db.query(Doctor).filter(Doctor.id == doctor_id).first()
-    if not doctor:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "DOCTOR_NOT_FOUND", "message": "Doctor not found"}
-        )
-    
-    query = doctors_db.query(DoctorRating).filter(DoctorRating.doctor_id == doctor_id)
-    
-    if stars:
-        query = query.filter(DoctorRating.rating == stars)
-    
-    if sort == "newest":
-        query = query.order_by(DoctorRating.created_at.desc())
-    elif sort == "oldest":
-        query = query.order_by(DoctorRating.created_at.asc())
-    elif sort == "highest":
-        query = query.order_by(DoctorRating.rating.desc())
-    elif sort == "lowest":
-        query = query.order_by(DoctorRating.rating.asc())
-    else:
-        query = query.order_by(DoctorRating.created_at.desc())
-    
-    ratings = query.all()
-    
-    return RatingListResponse(
-        ratings=[
-            RatingResponse(
-                id=r.id,
-                user_id=r.user_id,
-                user_name=r.user_name if not r.is_anonymous else "مجهول",
-                doctor_id=r.doctor_id,
-                pharmacy_id=None,
-                teacher_id=None,
-                rating=r.rating,
-                comment=r.comment,
-                created_at=r.created_at
-            ) for r in ratings
-        ],
-        total=len(ratings),
-        average=doctor.rating or 0.0
+    return get_entity_ratings(
+        db=doctors_db,
+        entity_model=Doctor,
+        rating_model=DoctorRating,
+        entity_id=doctor_id,
+        entity_id_field="doctor_id",
+        entity_type="doctor",
+        sort=sort,
+        stars=stars
     )
 
 
@@ -263,47 +278,15 @@ async def get_pharmacy_ratings(
     pharmacies_db: Session = Depends(get_pharmacies_db)
 ):
     """Get all ratings for a pharmacy"""
-    pharmacy = pharmacies_db.query(Pharmacy).filter(Pharmacy.id == pharmacy_id).first()
-    if not pharmacy:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "PHARMACY_NOT_FOUND", "message": "Pharmacy not found"}
-        )
-    
-    query = pharmacies_db.query(PharmacyRating).filter(PharmacyRating.pharmacy_id == pharmacy_id)
-    
-    if stars:
-        query = query.filter(PharmacyRating.rating == stars)
-    
-    if sort == "newest":
-        query = query.order_by(PharmacyRating.created_at.desc())
-    elif sort == "oldest":
-        query = query.order_by(PharmacyRating.created_at.asc())
-    elif sort == "highest":
-        query = query.order_by(PharmacyRating.rating.desc())
-    elif sort == "lowest":
-        query = query.order_by(PharmacyRating.rating.asc())
-    else:
-        query = query.order_by(PharmacyRating.created_at.desc())
-    
-    ratings = query.all()
-    
-    return RatingListResponse(
-        ratings=[
-            RatingResponse(
-                id=r.id,
-                user_id=r.user_id,
-                user_name=r.user_name if not r.is_anonymous else "مجهول",
-                doctor_id=None,
-                pharmacy_id=r.pharmacy_id,
-                teacher_id=None,
-                rating=r.rating,
-                comment=r.comment,
-                created_at=r.created_at
-            ) for r in ratings
-        ],
-        total=len(ratings),
-        average=pharmacy.rating or 0.0
+    return get_entity_ratings(
+        db=pharmacies_db,
+        entity_model=Pharmacy,
+        rating_model=PharmacyRating,
+        entity_id=pharmacy_id,
+        entity_id_field="pharmacy_id",
+        entity_type="pharmacy",
+        sort=sort,
+        stars=stars
     )
 
 
@@ -315,45 +298,13 @@ async def get_teacher_ratings(
     teachers_db: Session = Depends(get_teachers_db)
 ):
     """Get all ratings for a teacher"""
-    teacher = teachers_db.query(Teacher).filter(Teacher.id == teacher_id).first()
-    if not teacher:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "TEACHER_NOT_FOUND", "message": "Teacher not found"}
-        )
-    
-    query = teachers_db.query(TeacherRating).filter(TeacherRating.teacher_id == teacher_id)
-    
-    if stars:
-        query = query.filter(TeacherRating.rating == stars)
-    
-    if sort == "newest":
-        query = query.order_by(TeacherRating.created_at.desc())
-    elif sort == "oldest":
-        query = query.order_by(TeacherRating.created_at.asc())
-    elif sort == "highest":
-        query = query.order_by(TeacherRating.rating.desc())
-    elif sort == "lowest":
-        query = query.order_by(TeacherRating.rating.asc())
-    else:
-        query = query.order_by(TeacherRating.created_at.desc())
-    
-    ratings = query.all()
-    
-    return RatingListResponse(
-        ratings=[
-            RatingResponse(
-                id=r.id,
-                user_id=r.user_id,
-                user_name=r.user_name if not r.is_anonymous else "مجهول",
-                doctor_id=None,
-                pharmacy_id=None,
-                teacher_id=r.teacher_id,
-                rating=r.rating,
-                comment=r.comment,
-                created_at=r.created_at
-            ) for r in ratings
-        ],
-        total=len(ratings),
-        average=teacher.rating or 0.0
+    return get_entity_ratings(
+        db=teachers_db,
+        entity_model=Teacher,
+        rating_model=TeacherRating,
+        entity_id=teacher_id,
+        entity_id_field="teacher_id",
+        entity_type="teacher",
+        sort=sort,
+        stars=stars
     )

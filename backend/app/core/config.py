@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Email Settings
     mail_username: str | None = None
     mail_password: str | None = None
+    support_email: str = "ahmedmohamed1442006m@gmail.com"  # Default, override in .env
     
     class Config:
         env_file = ".env"
