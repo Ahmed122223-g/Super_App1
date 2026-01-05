@@ -1,0 +1,58 @@
+# Global / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log
+
+# Sensitive Data / Environment Variables
+.env
+.env.*
+*.env
+env/
+venv/
+.venv/
+secrets.json
+firebase_options.dart
+key.properties
+google-services.json
+GoogleService-Info.plist
+firebase-admin-sdk.json
+*.jks
+*.keystore
+
+# Python / Backend
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+backend/venv/
+backend/.venv/
+backend/.pytest_cache/
+backend/htmlcov/
+backend/.coverage
+backend/*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Flutter / Frontend
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+jiwar_web/android/app/debug
+jiwar_web/android/app/profile
+jiwar_web/android/app/release
+jiwar_web/ios/Flutter/.last_build_id
+jiwar_web/ios/.symlinks/
+jiwar_web/ios/Pods/
+jiwar_web/.ios/
+
+# Documentation generated
+**/doc/api/
+
+# User Specific
+**/workspace.xml
