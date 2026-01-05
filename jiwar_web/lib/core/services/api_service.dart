@@ -7,12 +7,26 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 /// API Service for backend communication
 class ApiService {
+  /// Dynamic Base URL that supports:
+  /// - Environment variable from .env (Priority 1)
+  /// - Compile-time dart-define (Priority 2): flutter run --dart-define=API_URL=http://10.0.2.2:8000/api
+  /// - Default fallback for web/localhost (Priority 3)
   static String get baseUrl {
     try {
-      return dotenv.env['API_URL'] ?? 'http://localhost:8000/api';
-    } catch (e) {
-      return 'http://localhost:8000/api';
-    }
+      // Priority 1: Environment variable
+      final envUrl = dotenv.env['API_URL'];
+      if (envUrl != null && envUrl.isNotEmpty) return envUrl;
+    } catch (_) {}
+    
+    // Priority 2: Compile-time dart-define
+    const definedUrl = String.fromEnvironment('API_URL', defaultValue: '');
+    if (definedUrl.isNotEmpty) return definedUrl;
+    
+    // Priority 3: Platform-aware default
+    // For web and iOS simulator, localhost works
+    // For Android Emulator, use: flutter run --dart-define=API_URL=http://10.0.2.2:8000/api
+    // For physical devices, use: flutter run --dart-define=API_URL=http://YOUR_IP:8000/api
+    return 'http://localhost:8000/api';
   }
   static String get staticUrl => '${baseUrl.replaceAll('/api', '')}/static/';
   static const String _tokenKey = 'auth_token';
@@ -800,33 +814,48 @@ class ApiService {
       return ApiResponse.success(response.data);
     } on DioException catch (e) {
       return _handleError(e);
+  }
+  
+  /// Check if filename is an image
+  bool _isImage(String filename) {
+    final ext = filename.toLowerCase();
+    return ext.endsWith('.jpg') || ext.endsWith('.jpeg') || 
+           ext.endsWith('.png') || ext.endsWith('.webp');
+  }
+  
+  /// Compress image bytes for optimal upload
+  /// Always compresses images to reduce bandwidth and upload time
+  Future<List<int>> _compressImage(List<int> bytes, String filename) async {
+    if (!_isImage(filename)) return bytes;
+    
+    try {
+      final compressed = await FlutterImageCompress.compressWithList(
+        Uint8List.fromList(bytes),
+        minHeight: 1920,  // Max height (maintains aspect ratio)
+        minWidth: 1080,   // Max width
+        quality: 75,      // Good quality/size balance
+        format: CompressFormat.jpeg,
+      );
+      
+      if (kDebugMode) {
+        final originalSize = (bytes.length / 1024).toStringAsFixed(1);
+        final compressedSize = (compressed.length / 1024).toStringAsFixed(1);
+        final savings = ((1 - compressed.length / bytes.length) * 100).toStringAsFixed(0);
+        print('📷 Image compressed: ${originalSize}KB → ${compressedSize}KB (${savings}% saved)');
+      }
+      
+      return compressed;
+    } catch (e) {
+      if (kDebugMode) print('⚠️ Compression failed, using original: $e');
+      return bytes;
     }
   }
-  /// Upload file
+  
+  /// Upload file with automatic image compression
   Future<ApiResponse<Map<String, dynamic>>> uploadFile(List<int> bytes, String filename) async {
     try {
-      List<int> fileBytes = bytes;
-      
-      // Compress if image and larger than 1MB
-      if (bytes.length > 1024 * 1024 && (filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png'))) {
-        try {
-          final Uint8List uint8List = Uint8List.fromList(bytes);
-          final compressed = await FlutterImageCompress.compressWithList(
-            uint8List,
-            minHeight: 1920, // Limit max resolution
-            minWidth: 1080,
-            quality: 70, // Reasonable quality
-          );
-          fileBytes = compressed.toList();
-          
-          if (kDebugMode) {
-             print('Compressed image: ${bytes.length} -> ${fileBytes.length} bytes');
-          }
-        } catch (e) {
-          if (kDebugMode) print('Compression failed: $e');
-          // Fallback to original bytes
-        }
-      }
+      // Always compress images for optimal upload
+      final fileBytes = await _compressImage(bytes, filename);
 
       final formData = FormData.fromMap({
         'file': MultipartFile.fromBytes(fileBytes, filename: filename),
