@@ -1,18 +1,26 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:dio/dio.dart';
-
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 /// API Service for backend communication
 class ApiService {
-  static const String baseUrl = 'http://localhost:8000/api';
-  static const String staticUrl = 'http://localhost:8000'; // For static files (no /api)
+  static String get baseUrl {
+    try {
+      return dotenv.env['API_URL'] ?? 'http://localhost:8000/api';
+    } catch (e) {
+      return 'http://localhost:8000/api';
+    }
+  }
+  static String get staticUrl => '${baseUrl.replaceAll('/api', '')}/static/';
   static const String _tokenKey = 'auth_token';
   
   late final Dio _dio;
   String? _token;
   Completer<void>? _initCompleter;
+  final _storage = const FlutterSecureStorage();
   
   static final ApiService _instance = ApiService._internal();
   
@@ -63,8 +71,8 @@ class ApiService {
   }
   
   Future<void> _loadToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString(_tokenKey);
+    // In secure storage, ready value is async
+    _token = await _storage.read(key: _tokenKey);
     if (_initCompleter != null && !_initCompleter!.isCompleted) {
       _initCompleter!.complete();
     }
@@ -72,17 +80,16 @@ class ApiService {
   
   Future<void> setToken(String token) async {
     _token = token;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_tokenKey, token);
+    await _storage.write(key: _tokenKey, value: token);
   }
   
   Future<void> clearToken() async {
     _token = null;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_tokenKey);
+    await _storage.delete(key: _tokenKey);
   }
   
   bool get isAuthenticated => _token != null;
+  String? get token => _token;
   
   // ==================== Auth Endpoints ====================
   
@@ -139,19 +146,19 @@ class ApiService {
         if (description != null && description.isNotEmpty) 'description': description,
       };
       
-      // Debug logging
-      print('=== REGISTER DOCTOR REQUEST ===');
-      print('Data: $data');
-      print('===============================');
+      if (kDebugMode) {
+        print('=== REGISTER DOCTOR REQUEST ===');
+        // Do not print sensitive data in production
+        print('Data: ${data.keys.toList()}'); 
+      }
       
       final response = await _dio.post('/auth/register/doctor', data: data);
       return ApiResponse.success(response.data);
     } on DioException catch (e) {
-      // Log error response
-      print('=== REGISTER DOCTOR ERROR ===');
-      print('Status: ${e.response?.statusCode}');
-      print('Response: ${e.response?.data}');
-      print('=============================');
+      if (kDebugMode) {
+        print('=== REGISTER DOCTOR ERROR ===');
+        print('Status: ${e.response?.statusCode}');
+      }
       return _handleError(e);
     }
   }
@@ -186,14 +193,17 @@ class ApiService {
         if (description != null) 'description': description,
       };
       
+      if (kDebugMode) {
+        print('=== REGISTER TEACHER REQUEST ===');
+      }
+      
       final response = await _dio.post('/auth/register/teacher', data: data);
       return ApiResponse.success(response.data);
     } on DioException catch (e) {
-      // Log error response
-      print('=== REGISTER TEACHER ERROR ===');
-      print('Status: ${e.response?.statusCode}');
-      print('Response: ${e.response?.data}');
-      print('==============================');
+      if (kDebugMode) {
+        print('=== REGISTER TEACHER ERROR ===');
+        print('Status: ${e.response?.statusCode}');
+      }
       return _handleError(e);
     }
   }
@@ -795,8 +805,31 @@ class ApiService {
   /// Upload file
   Future<ApiResponse<Map<String, dynamic>>> uploadFile(List<int> bytes, String filename) async {
     try {
+      List<int> fileBytes = bytes;
+      
+      // Compress if image and larger than 1MB
+      if (bytes.length > 1024 * 1024 && (filename.endsWith('.jpg') || filename.endsWith('.jpeg') || filename.endsWith('.png'))) {
+        try {
+          final Uint8List uint8List = Uint8List.fromList(bytes);
+          final compressed = await FlutterImageCompress.compressWithList(
+            uint8List,
+            minHeight: 1920, // Limit max resolution
+            minWidth: 1080,
+            quality: 70, // Reasonable quality
+          );
+          fileBytes = compressed.toList();
+          
+          if (kDebugMode) {
+             print('Compressed image: ${bytes.length} -> ${fileBytes.length} bytes');
+          }
+        } catch (e) {
+          if (kDebugMode) print('Compression failed: $e');
+          // Fallback to original bytes
+        }
+      }
+
       final formData = FormData.fromMap({
-        'file': MultipartFile.fromBytes(bytes, filename: filename),
+        'file': MultipartFile.fromBytes(fileBytes, filename: filename),
       });
       
       final response = await _dio.post('/utils/upload', data: formData);
@@ -1043,7 +1076,20 @@ class ApiService {
 
   Future<ApiResponse<void>> registerFcmToken(String token) async {
     try {
-      await _dio.post('/auth/fcm-token', queryParameters: {'token': token});
+      // Determine device type for multi-device support
+      String deviceType = 'unknown';
+      if (kIsWeb) {
+        deviceType = 'web';
+      } else {
+        // For mobile, we'd need dart:io Platform check
+        // Default to 'mobile' for now
+        deviceType = 'mobile';
+      }
+      
+      await _dio.post('/auth/fcm-token', data: {
+        'token': token,
+        'device_type': deviceType,
+      });
       return ApiResponse.success(null);
     } on DioException catch (e) {
       return _handleError(e);

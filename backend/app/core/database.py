@@ -23,8 +23,8 @@ def get_db_url(url: str) -> str:
 users_engine = create_engine(
     get_db_url(settings.users_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 UsersSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=users_engine)
 UsersBase = declarative_base()
@@ -33,8 +33,8 @@ UsersBase = declarative_base()
 doctors_engine = create_engine(
     get_db_url(settings.doctors_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 DoctorsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=doctors_engine)
 DoctorsBase = declarative_base()
@@ -43,8 +43,8 @@ DoctorsBase = declarative_base()
 pharmacies_engine = create_engine(
     get_db_url(settings.pharmacies_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 PharmaciesSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=pharmacies_engine)
 PharmaciesBase = declarative_base()
@@ -53,8 +53,8 @@ PharmaciesBase = declarative_base()
 codes_engine = create_engine(
     get_db_url(settings.codes_db_url),
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10
+    pool_size=2,
+    max_overflow=5
 )
 CodesSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=codes_engine)
 CodesBase = declarative_base()
@@ -63,8 +63,8 @@ CodesBase = declarative_base()
 restaurants_engine = create_engine(
     get_db_url(settings.restaurants_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 RestaurantsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=restaurants_engine)
 RestaurantsBase = declarative_base()
@@ -73,8 +73,8 @@ RestaurantsBase = declarative_base()
 companies_engine = create_engine(
     get_db_url(settings.companies_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 CompaniesSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=companies_engine)
 CompaniesBase = declarative_base()
@@ -83,8 +83,8 @@ CompaniesBase = declarative_base()
 engineers_engine = create_engine(
     get_db_url(settings.engineers_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 EngineersSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engineers_engine)
 EngineersBase = declarative_base()
@@ -93,8 +93,8 @@ EngineersBase = declarative_base()
 mechanics_engine = create_engine(
     get_db_url(settings.mechanics_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 MechanicsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=mechanics_engine)
 MechanicsSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=mechanics_engine)
@@ -104,8 +104,8 @@ MechanicsBase = declarative_base()
 teachers_engine = create_engine(
     get_db_url(settings.teachers_db_url),
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    pool_size=2, # Reduced from 10 to save resources (8 DBs * 2 connections = 16 min)
+    max_overflow=5 # Reduced from 20
 )
 TeachersSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=teachers_engine)
 TeachersBase = declarative_base()

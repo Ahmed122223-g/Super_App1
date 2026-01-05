@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
@@ -294,6 +294,7 @@ def get_reservations(
 def reservation_action(
     id: int,
     action: ReservationAction,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     doctors_db: Session = Depends(get_doctors_db),
     teachers_db: Session = Depends(get_teachers_db),
@@ -329,7 +330,7 @@ def reservation_action(
         # Notify User
         user_to_notify = users_db.query(User).filter(User.id == reservation.user_id).first()
         if user_to_notify:
-            notify_booking_confirmed(users_db, user_to_notify, profile.name, reservation.id)
+            background_tasks.add_task(notify_booking_confirmed, users_db, user_to_notify, profile.name, reservation.id)
             
         return {"success": True, "message": "Reservation confirmed"}
         
@@ -341,7 +342,7 @@ def reservation_action(
         # Notify User
         user_to_notify = users_db.query(User).filter(User.id == reservation.user_id).first()
         if user_to_notify:
-            notify_booking_rejected(users_db, user_to_notify, profile.name, reservation.id, action.reason)
+            background_tasks.add_task(notify_booking_rejected, users_db, user_to_notify, profile.name, reservation.id, action.reason)
             
         return {"success": True, "message": "Reservation rejected"}
     elif action.action == "complete":
@@ -354,9 +355,9 @@ def reservation_action(
     if user_to_notify:
         provider_name = profile.name
         if action.action == "accept":
-            notify_booking_confirmed(users_db, user_to_notify, provider_name, reservation.id)
+            background_tasks.add_task(notify_booking_confirmed, users_db, user_to_notify, provider_name, reservation.id)
         elif action.action == "reject":
-            notify_booking_rejected(users_db, user_to_notify, provider_name, reservation.id, action.reason)
+            background_tasks.add_task(notify_booking_rejected, users_db, user_to_notify, provider_name, reservation.id, action.reason)
 
     return {"success": True, "status": reservation.status}
 
@@ -400,6 +401,7 @@ def get_orders(
 def set_order_price(
     id: int,
     price_update: OrderPriceUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     pharmacies_db: Session = Depends(get_pharmacies_db),
     users_db: Session = Depends(get_users_db)
@@ -426,7 +428,7 @@ def set_order_price(
     # Notify User about price
     user_to_notify = users_db.query(User).filter(User.id == order.user_id).first()
     if user_to_notify:
-        notify_order_priced(users_db, user_to_notify, profile.name, order.id, price_update.total_price)
+        background_tasks.add_task(notify_order_priced, users_db, user_to_notify, profile.name, order.id, price_update.total_price)
         
     return {"success": True, "message": "Order priced and sent to user"}
 
@@ -438,6 +440,7 @@ def set_order_price(
 @router.post("/reservations/book")
 def create_booking(
     booking: BookingRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     doctors_db: Session = Depends(get_doctors_db),
     teachers_db: Session = Depends(get_teachers_db),
@@ -471,7 +474,7 @@ def create_booking(
         # Notify Doctor
         doctor_user = users_db.query(User).filter(User.profile_id == doctor.id, User.user_type == UserType.DOCTOR).first()
         if doctor_user:
-            notify_new_booking(users_db, doctor_user, booking.patient_name, reservation.id, "doctor")
+            background_tasks.add_task(notify_new_booking, users_db, doctor_user, booking.patient_name, reservation.id, "doctor")
             
         return {"success": True, "reservation_id": reservation.id, "message": "تم إرسال طلب الحجز بنجاح"}
     
@@ -498,7 +501,7 @@ def create_booking(
         # Notify Teacher
         teacher_user = users_db.query(User).filter(User.profile_id == teacher.id, User.user_type == UserType.TEACHER).first()
         if teacher_user:
-            notify_new_booking(users_db, teacher_user, booking.patient_name, reservation.id, "teacher")
+            background_tasks.add_task(notify_new_booking, users_db, teacher_user, booking.patient_name, reservation.id, "teacher")
 
         return {"success": True, "reservation_id": reservation.id, "message": "تم إرسال طلب الحجز بنجاح"}
     
@@ -691,6 +694,7 @@ def delete_pharmacy_order(
 @router.post("/orders/create")
 def create_order(
     order: CreateOrderRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     pharmacies_db: Session = Depends(get_pharmacies_db),
     users_db: Session = Depends(get_users_db)
@@ -722,7 +726,7 @@ def create_order(
     # Notify Pharmacy
     pharmacy_user = users_db.query(User).filter(User.profile_id == pharmacy.id, User.user_type == UserType.PHARMACY).first()
     if pharmacy_user:
-        notify_new_order(users_db, pharmacy_user, order.customer_name, new_order.id)
+        background_tasks.add_task(notify_new_order, users_db, pharmacy_user, order.customer_name, new_order.id)
     
     return {"success": True, "order_id": new_order.id, "message": "تم إرسال طلبك بنجاح"}
 
@@ -731,6 +735,7 @@ def create_order(
 def user_order_action(
     id: int,
     action: OrderUserAction,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     pharmacies_db: Session = Depends(get_pharmacies_db),
     users_db: Session = Depends(get_users_db)
@@ -772,7 +777,7 @@ def user_order_action(
         if pharmacy_user and pharmacy_user.fcm_token:
             title = "تحديث حالة الطلب"
             body = f"قام العميل {order.customer_name} ب{action.action == 'accept' and 'قبول' or 'رفض'} السعر"
-            send_notification(pharmacy_user.fcm_token, title, body, {"type": "order_update", "order_id": order.id})
+            background_tasks.add_task(send_notification, pharmacy_user.fcm_token, title, body, {"type": "order_update", "order_id": order.id})
 
     return {"success": True, "status": order.status.value, "message": message}
 
@@ -798,32 +803,12 @@ def pharmacy_order_action(
         raise HTTPException(status_code=404, detail="Order not found")
         
     if action.action == "deliver":
-        # Check logic: can only deliver if Accepted? Or Priced if auto-accept?
-        # Assuming flow: Pending -> Priced -> Accepted -> Delivered
-        if order.status not in [OrderStatus.ACCEPTED]:
-             raise HTTPException(status_code=400, detail="Order must be Accepted by user first")
-        order.status = OrderStatus.DELIVERED # Or COMPLETED? Let's assume Delivered IS final or use Completed.
-        # Check OrderStatus enum. usually: PENDING, PRICED, ACCEPTED, REJECTED, CANCELLED, COMPLETED?
-        # Let's check schemas/models.
-        # Assuming COMPLETED is the end state.
-        
-        # Checking existing code: 'statusPriced', 'statusDelivered' in localizations implies 'DELIVERED'.
-        # Let's verify OrderStatus enum if accessible. 
-        # But based on dashboard.py imports, OrderStatus is imported.
-        # I'll optimistically use OrderStatus.COMPLETED or DELIVERED if it exists. 
-        # Let's assume COMPLETED for now to match Reservations, or verify.
-        # Wait, localizations said "statusDelivered": "Delivered".
-        # Let's assume I should update OrderStatus to have DELIVERED if not exists, 
-        # or just use COMPLETED and map it. 
-        # Let's peek at imports... `from app.models.orders import OrderStatus`
-        
-        # Safest is to use a valid status string if I can't check Enum.
-        # I will assume OrderStatus.COMPLETED exists.
-        
-        order.status = OrderStatus.DELIVERED 
+        order.status = OrderStatus.DELIVERED
         message = "تم توصيل الطلب"
-        
-    elif action.action == "reject": # Cancel
+    elif action.action == "reject":
+        # Check if already delivered?
+        if order.status == OrderStatus.DELIVERED:
+             raise HTTPException(status_code=400, detail="Cannot cancel delivered order")
         order.status = OrderStatus.CANCELLED
         message = "تم إلغاء الطلب"
     else:
@@ -831,42 +816,4 @@ def pharmacy_order_action(
         
     pharmacies_db.commit()
     
-    # Notify User
-    user_to_notify = users_db.query(User).filter(User.id == order.user_id).first()
-    if user_to_notify and user_to_notify.fcm_token:
-        title = "تحديث حالة الطلب"
-        body = f"تم {action.action == 'deliver' and 'توصيل' or 'إلغاء'} طلبك من صيدلية" 
-        send_notification(user_to_notify.fcm_token, title, body, {"type": "order_update", "order_id": order.id})
-
     return {"success": True, "status": order.status.value, "message": message}
-
-
-@router.get("/my-orders", response_model=List[UserOrderResponse])
-def get_my_orders(
-    current_user: User = Depends(get_current_user),
-    pharmacies_db: Session = Depends(get_pharmacies_db)
-):
-    """Get all orders for the current user"""
-    orders = pharmacies_db.query(PharmacyOrder).filter(
-        PharmacyOrder.user_id == current_user.id
-    ).order_by(PharmacyOrder.created_at.desc()).all()
-    
-    results = []
-    for o in orders:
-        pharmacy = pharmacies_db.query(Pharmacy).filter(Pharmacy.id == o.pharmacy_id).first()
-        results.append(UserOrderResponse(
-            id=o.id,
-            pharmacy_id=o.pharmacy_id,
-            pharmacy_name=pharmacy.name if pharmacy else "Unknown",
-            items_text=o.items_text,
-            prescription_image=o.prescription_image,
-            total_price=o.total_price,
-            delivery_fee=o.delivery_fee,
-            estimated_time=o.estimated_delivery_time,
-            notes=o.pharmacy_notes,
-            status=o.status.value,
-            created_at=o.created_at
-        ))
-    
-    return results
-

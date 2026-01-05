@@ -1,7 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../services/api_service.dart';
-import 'dart:js' as js;
+import 'package:flutter/foundation.dart';
+
 
 enum AuthStatus {
   initial,
@@ -94,25 +95,21 @@ class AuthNotifier extends StateNotifier<AuthState> {
     
     await ApiService().clearToken();
     
+    // Proper state reset triggers GoRouter redirect automatically
     state = state.copyWith(
       status: AuthStatus.unauthenticated,
       token: null,
       userType: null,
     );
     
-    try {
-      js.context['localStorage'].callMethod('clear');
-      js.context['sessionStorage'].callMethod('clear');
-    } catch (e) {
-      print('Could not clear storage: $e');
-    }
-    
-    await Future.delayed(const Duration(milliseconds: 500));
-    
-    try {
-      js.context['location'].callMethod('reload');
-    } catch (e) {
-      print('Could not reload page: $e');
+    // On Web, we might want to reload to clear memory, but only if safe
+    if (kIsWeb) {
+      try {
+        // Use window.location.reload() safely via proper package if needed
+        // For now, pure state management is safer and smoother
+      } catch (e) {
+        // ignore
+      }
     }
   }
 }

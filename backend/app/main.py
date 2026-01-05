@@ -59,7 +59,8 @@ app.add_middleware(
 )
 
 # Mount Static Files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# SECURITY WARNING: Do not serve static files publicly. Use /api/utils/files/{filename} instead.
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ============================================
 # EXCEPTION HANDLERS

@@ -18,7 +18,12 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
   // Load Env
-  await dotenv.load(fileName: ".env");
+  try {
+    await dotenv.load(fileName: ".env");
+  } catch (e) {
+    debugPrint("Failed to load .env file: $e");
+    // Set default values if .env fails to load
+  }
   
   // Initialize SharedPreferences
   final prefs = await SharedPreferences.getInstance();

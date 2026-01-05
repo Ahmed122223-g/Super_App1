@@ -1,7 +1,7 @@
 """
 Jiwar Backend - Models Package
 """
-from app.models.user import User, UserType
+from app.models.user import User, UserType, UserDevice
 from app.models.notification import Notification
 from app.models.doctor import Doctor, Specialty, DoctorRating, SPECIALTIES_DATA
 from app.models.pharmacy import Pharmacy, Medicine, PharmacyRating
@@ -19,6 +19,7 @@ __all__ = [
     # User
     "User",
     "UserType",
+    "UserDevice",
     # Doctor
     "Doctor",
     "Specialty",

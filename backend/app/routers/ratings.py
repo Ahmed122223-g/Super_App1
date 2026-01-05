@@ -2,7 +2,7 @@
 Jiwar Backend - Ratings Router
 Using separate databases for doctors and pharmacies ratings
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List, Optional, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -25,6 +25,7 @@ router = APIRouter()
 @router.post("/", response_model=RatingResponse, status_code=status.HTTP_201_CREATED)
 async def create_rating(
     request: RatingCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     doctors_db: Session = Depends(get_doctors_db),
     pharmacies_db: Session = Depends(get_pharmacies_db),
@@ -56,9 +57,6 @@ async def create_rating(
                 detail={"error_code": "DOCTOR_NOT_FOUND", "message": "Doctor not found"}
             )
         
-        # Allow multiple ratings per user
-        # pass
-        
         # Create rating
         rating = DoctorRating(
             doctor_id=request.doctor_id,
@@ -86,10 +84,9 @@ async def create_rating(
         doctors_db.refresh(rating)
         
         # Notify Doctor
-        # We need to find the User associated with this Doctor profile
         doctor_user = users_db.query(User).filter(User.profile_id == doctor.id, User.user_type == "doctor").first()
-        if doctor_user and doctor_user.fcm_token:
-            notify_new_rating(doctor_user.fcm_token, request.rating, "doctor")
+        if doctor_user:
+            background_tasks.add_task(notify_new_rating, users_db, doctor_user, request.rating, "doctor")
 
         return RatingResponse(
             id=rating.id,
@@ -111,9 +108,6 @@ async def create_rating(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error_code": "PHARMACY_NOT_FOUND", "message": "Pharmacy not found"}
             )
-        
-        # Allow multiple ratings per user
-        # pass
         
         # Create rating
         rating = PharmacyRating(
@@ -142,8 +136,8 @@ async def create_rating(
         
         # Notify Pharmacy
         pharmacy_user = users_db.query(User).filter(User.profile_id == pharmacy.id, User.user_type == "pharmacy").first()
-        if pharmacy_user and pharmacy_user.fcm_token:
-            notify_new_rating(pharmacy_user.fcm_token, request.rating, "pharmacy")
+        if pharmacy_user:
+            background_tasks.add_task(notify_new_rating, users_db, pharmacy_user, request.rating, "pharmacy")
 
         return RatingResponse(
             id=rating.id,
@@ -165,9 +159,6 @@ async def create_rating(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error_code": "TEACHER_NOT_FOUND", "message": "Teacher not found"}
             )
-        
-        # Allow multiple ratings per user
-        # pass
         
         # Create rating
         rating = TeacherRating(
@@ -196,8 +187,8 @@ async def create_rating(
         
         # Notify Teacher
         teacher_user = users_db.query(User).filter(User.profile_id == teacher.id, User.user_type == "teacher").first()
-        if teacher_user and teacher_user.fcm_token:
-            notify_new_rating(teacher_user.fcm_token, request.rating, "teacher")
+        if teacher_user:
+            background_tasks.add_task(notify_new_rating, users_db, teacher_user, request.rating, "teacher")
 
         return RatingResponse(
             id=rating.id,
@@ -229,20 +220,20 @@ async def get_doctor_ratings(
     
     query = doctors_db.query(DoctorRating).filter(DoctorRating.doctor_id == doctor_id)
     
-    # Filter by stars
     if stars:
         query = query.filter(DoctorRating.rating == stars)
-        
-    # Sort
-    if sort == 'oldest':
-        query = query.order_by(DoctorRating.created_at.asc())
-    elif sort == 'highest':
-        query = query.order_by(DoctorRating.rating.desc())
-    elif sort == 'lowest':
-        query = query.order_by(DoctorRating.rating.asc())
-    else: # Default: newest
+    
+    if sort == "newest":
         query = query.order_by(DoctorRating.created_at.desc())
-        
+    elif sort == "oldest":
+        query = query.order_by(DoctorRating.created_at.asc())
+    elif sort == "highest":
+        query = query.order_by(DoctorRating.rating.desc())
+    elif sort == "lowest":
+        query = query.order_by(DoctorRating.rating.asc())
+    else:
+        query = query.order_by(DoctorRating.created_at.desc())
+    
     ratings = query.all()
     
     return RatingListResponse(
@@ -250,19 +241,17 @@ async def get_doctor_ratings(
             RatingResponse(
                 id=r.id,
                 user_id=r.user_id,
-                user_name="مجهول" if r.is_anonymous else r.user_name,
-                is_anonymous=r.is_anonymous,
+                user_name=r.user_name if not r.is_anonymous else "مجهول",
                 doctor_id=r.doctor_id,
                 pharmacy_id=None,
                 teacher_id=None,
                 rating=r.rating,
                 comment=r.comment,
                 created_at=r.created_at
-            )
-            for r in ratings
+            ) for r in ratings
         ],
         total=len(ratings),
-        average=doctor.rating
+        average=doctor.rating or 0.0
     )
 
 
@@ -285,16 +274,18 @@ async def get_pharmacy_ratings(
     
     if stars:
         query = query.filter(PharmacyRating.rating == stars)
-        
-    if sort == 'oldest':
+    
+    if sort == "newest":
+        query = query.order_by(PharmacyRating.created_at.desc())
+    elif sort == "oldest":
         query = query.order_by(PharmacyRating.created_at.asc())
-    elif sort == 'highest':
+    elif sort == "highest":
         query = query.order_by(PharmacyRating.rating.desc())
-    elif sort == 'lowest':
+    elif sort == "lowest":
         query = query.order_by(PharmacyRating.rating.asc())
     else:
         query = query.order_by(PharmacyRating.created_at.desc())
-        
+    
     ratings = query.all()
     
     return RatingListResponse(
@@ -302,19 +293,17 @@ async def get_pharmacy_ratings(
             RatingResponse(
                 id=r.id,
                 user_id=r.user_id,
-                user_name="مجهول" if r.is_anonymous else r.user_name,
-                is_anonymous=r.is_anonymous,
+                user_name=r.user_name if not r.is_anonymous else "مجهول",
                 doctor_id=None,
                 pharmacy_id=r.pharmacy_id,
                 teacher_id=None,
                 rating=r.rating,
                 comment=r.comment,
                 created_at=r.created_at
-            )
-            for r in ratings
+            ) for r in ratings
         ],
         total=len(ratings),
-        average=pharmacy.rating
+        average=pharmacy.rating or 0.0
     )
 
 
@@ -337,16 +326,18 @@ async def get_teacher_ratings(
     
     if stars:
         query = query.filter(TeacherRating.rating == stars)
-        
-    if sort == 'oldest':
+    
+    if sort == "newest":
+        query = query.order_by(TeacherRating.created_at.desc())
+    elif sort == "oldest":
         query = query.order_by(TeacherRating.created_at.asc())
-    elif sort == 'highest':
+    elif sort == "highest":
         query = query.order_by(TeacherRating.rating.desc())
-    elif sort == 'lowest':
+    elif sort == "lowest":
         query = query.order_by(TeacherRating.rating.asc())
     else:
         query = query.order_by(TeacherRating.created_at.desc())
-        
+    
     ratings = query.all()
     
     return RatingListResponse(
@@ -354,17 +345,15 @@ async def get_teacher_ratings(
             RatingResponse(
                 id=r.id,
                 user_id=r.user_id,
-                user_name="مجهول" if r.is_anonymous else r.user_name,
-                is_anonymous=r.is_anonymous,
+                user_name=r.user_name if not r.is_anonymous else "مجهول",
                 doctor_id=None,
                 pharmacy_id=None,
                 teacher_id=r.teacher_id,
                 rating=r.rating,
                 comment=r.comment,
                 created_at=r.created_at
-            )
-            for r in ratings
+            ) for r in ratings
         ],
         total=len(ratings),
-        average=teacher.rating
+        average=teacher.rating or 0.0
     )

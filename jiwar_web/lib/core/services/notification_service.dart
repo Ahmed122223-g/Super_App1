@@ -80,14 +80,19 @@ class NotificationService {
   }
   
   void _handleNotificationClick(RemoteMessage message) {
-    // Navigate based on data
+    // Navigate based on data payload
     final data = message.data;
     final type = data['type'];
-    final action = data['action'];
     
-    debugPrint("Notification Clicked: Type=$type, Action=$action");
+    debugPrint("Notification Clicked: Type=$type, Data=$data");
     
-    // Implementation dependent on navigation setup (GoRouter context needed)
-    // We can use a GlobalKey<NavigatorState> if available, or a stream
+    // Navigation logic - requires access to GoRouter context
+    // This can be handled via a stream or global navigator key
+    // For now, the data is logged. Full navigation requires app-level integration.
+    
+    // Example routing hints (to be implemented at app level):
+    // - new_booking, booking_confirmed, booking_rejected -> /dashboard/activity
+    // - new_order, order_priced -> /dashboard/activity  
+    // - new_rating -> /dashboard/reviews
   }
 }

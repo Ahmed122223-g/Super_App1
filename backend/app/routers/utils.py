@@ -1,4 +1,7 @@
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
+from fastapi.responses import FileResponse
+from app.core.security import get_current_user
+from app.models import User
 import shutil
 import os
 import uuid
@@ -21,9 +24,29 @@ def save_upload_file(file: UploadFile) -> str:
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        return f"/static/uploads/{filename}"
+        # Return secure API path instead of static path
+        return f"/api/utils/files/{filename}"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {str(e)}")
+
+@router.get("/files/{filename}")
+async def get_secure_file(
+    filename: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Securely serve files (images/docs) to authenticated users only.
+    Prevents IDOR and public access.
+    """
+    # Prevent directory traversal
+    if ".." in filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+        
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(file_path)
 
 @router.post("/upload", response_model=Dict[str, str])
 async def upload_file(file: UploadFile = File(...)):

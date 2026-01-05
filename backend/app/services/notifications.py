@@ -7,6 +7,7 @@ from firebase_admin import credentials, messaging
 from typing import Optional, Dict, Any
 import os
 import logging
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,10 @@ def initialize_firebase():
     
     try:
         # Look for credentials file
-        cred_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'firebase-admin-sdk.json')
+        # Priority: Env Var -> Relative Path
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
+        if not cred_path:
+             cred_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'firebase-admin-sdk.json')
         
         if os.path.exists(cred_path):
             cred = credentials.Certificate(cred_path)
@@ -81,7 +85,6 @@ def send_notification(
             android=messaging.AndroidConfig(
                 priority="high",
                 notification=messaging.AndroidNotification(
-                    icon="ic_notification",
                     color="#4CAF50",
                     sound="default",
                     click_action="FLUTTER_NOTIFICATION_CLICK"
@@ -137,6 +140,48 @@ def send_notification_to_multiple(
     return success_count
 
 
+def send_notification_to_user(
+    db: Session,
+    user_id: int,
+    title: str,
+    body: str,
+    data: Optional[Dict[str, Any]] = None
+) -> int:
+    """
+    Send notification to ALL devices of a user.
+    Cleans up invalid tokens automatically.
+    
+    Returns:
+        Number of successful sends
+    """
+    from app.models.user import UserDevice
+    
+    devices = db.query(UserDevice).filter(UserDevice.user_id == user_id).all()
+    if not devices:
+        logger.info(f"No devices registered for user {user_id}")
+        return 0
+    
+    success_count = 0
+    tokens_to_remove = []
+    
+    for device in devices:
+        try:
+            if send_notification(device.fcm_token, title, body, data):
+                success_count += 1
+            else:
+                # Token invalid - mark for removal
+                tokens_to_remove.append(device.id)
+        except Exception as e:
+            logger.error(f"Error sending to device {device.id}: {e}")
+    
+    # Clean up invalid tokens
+    if tokens_to_remove:
+        db.query(UserDevice).filter(UserDevice.id.in_(tokens_to_remove)).delete(synchronize_session=False)
+        db.commit()
+        logger.info(f"Removed {len(tokens_to_remove)} invalid device tokens")
+    
+    return success_count
+
 
 # ==========================================
 # Notification Templates (With Persistence)
@@ -176,10 +221,8 @@ def notify_new_booking(db: Session, provider: User, patient_name: str, reservati
     # Persistent Save
     save_notification(db, provider.id, title, body, data)
     
-    # Send Push
-    if provider.fcm_token:
-        return send_notification(provider.fcm_token, title, body, data)
-    return False
+    # Send Push to all devices
+    return send_notification_to_user(db, provider.id, title, body, data) > 0
 
 
 def notify_booking_confirmed(db: Session, user: User, provider_name: str, reservation_id: int) -> bool:
@@ -194,9 +237,7 @@ def notify_booking_confirmed(db: Session, user: User, provider_name: str, reserv
     
     save_notification(db, user.id, title, body, data)
     
-    if user.fcm_token:
-        return send_notification(user.fcm_token, title, body, data)
-    return False
+    return send_notification_to_user(db, user.id, title, body, data) > 0
 
 
 def notify_booking_rejected(db: Session, user: User, provider_name: str, reservation_id: int, reason: Optional[str] = None) -> bool:
@@ -214,9 +255,7 @@ def notify_booking_rejected(db: Session, user: User, provider_name: str, reserva
     
     save_notification(db, user.id, title, body, data)
     
-    if user.fcm_token:
-        return send_notification(user.fcm_token, title, body, data)
-    return False
+    return send_notification_to_user(db, user.id, title, body, data) > 0
 
 
 def notify_new_order(db: Session, pharmacy: User, customer_name: str, order_id: int) -> bool:
@@ -231,9 +270,7 @@ def notify_new_order(db: Session, pharmacy: User, customer_name: str, order_id: 
     
     save_notification(db, pharmacy.id, title, body, data)
     
-    if pharmacy.fcm_token:
-        return send_notification(pharmacy.fcm_token, title, body, data)
-    return False
+    return send_notification_to_user(db, pharmacy.id, title, body, data) > 0
 
 
 def notify_order_priced(db: Session, user: User, pharmacy_name: str, order_id: int, total_price: float) -> bool:
@@ -248,9 +285,7 @@ def notify_order_priced(db: Session, user: User, pharmacy_name: str, order_id: i
     
     save_notification(db, user.id, title, body, data)
     
-    if user.fcm_token:
-        return send_notification(user.fcm_token, title, body, data)
-    return False
+    return send_notification_to_user(db, user.id, title, body, data) > 0
 
 
 def notify_new_rating(db: Session, provider: User, stars: int, provider_type: str) -> bool:
@@ -267,7 +302,5 @@ def notify_new_rating(db: Session, provider: User, stars: int, provider_type: st
     
     save_notification(db, provider.id, title, body, data)
     
-    if provider.fcm_token:
-        return send_notification(provider.fcm_token, title, body, data)
-    return False
+    return send_notification_to_user(db, provider.id, title, body, data) > 0
 

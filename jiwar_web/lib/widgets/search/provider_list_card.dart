@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:jiwar_web/core/theme/app_theme.dart';
 import 'package:jiwar_web/core/services/api_service.dart';
+import 'package:jiwar_web/widgets/common/secure_network_image.dart';
 
 class ProviderListCard extends StatefulWidget {
   final int id;
@@ -11,7 +12,7 @@ class ProviderListCard extends StatefulWidget {
   final String address;
   final double rating;
   final String? image;
-  final bool isFavorite; // Pass initial state if known, or load it
+  final bool isFavorite;
   final VoidCallback onTap;
 
   const ProviderListCard({
@@ -49,7 +50,6 @@ class _ProviderListCardState extends State<ProviderListCard> {
     if (!result.isSuccess) {
       // Revert if failed
       if (mounted) setState(() => _isFavorite = !_isFavorite);
-      // Show error snackbar?
     }
   }
 
@@ -85,7 +85,7 @@ class _ProviderListCardState extends State<ProviderListCard> {
                     color: Colors.grey[800],
                     borderRadius: BorderRadius.circular(12),
                     image: widget.image != null
-                        ? DecorationImage(image: NetworkImage(widget.image!), fit: BoxFit.cover)
+                        ? DecorationImage(image: secureNetworkImageProvider(widget.image!), fit: BoxFit.cover)
                         : null,
                   ),
                   child: widget.image == null

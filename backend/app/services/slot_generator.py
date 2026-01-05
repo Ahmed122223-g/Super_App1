@@ -43,6 +43,9 @@ class SlotGenerator:
         except ValueError:
             return []
             
+        # Optimize: Create set of booked times for O(1) lookup
+        booked_times = {res.visit_date for res in existing_reservations}
+
         # Create base slots (30 min intervals)
         slots = []
         current_time = datetime.combine(date.date(), start_time)
@@ -50,19 +53,9 @@ class SlotGenerator:
         
         while current_time + timedelta(minutes=30) <= end_datetime:
             slot_start = current_time
-            # slot_end = current_time + timedelta(minutes=30)
             
-            # Check if this slot conflicts with any existing reservation
-            is_booked = False
-            for res in existing_reservations:
-                # Basic check: if reservation visit_date matches slot_start
-                # NOTE: Reservation system currently stores specific visit_date. 
-                # We assume reservation duration is also 30 mins for simplicity, or we treat visit_date as the start time.
-                if res.visit_date == slot_start:
-                    is_booked = True
-                    break
-            
-            if not is_booked:
+            # Check availability
+            if slot_start not in booked_times:
                 slots.append(slot_start.strftime("%H:%M"))
                 
             current_time += timedelta(minutes=30)

@@ -15,20 +15,53 @@ from app.models.user import User
 from app.core.config import settings
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against its hash"""
-    return bcrypt.checkpw(
-        plain_password.encode('utf-8'),
-        hashed_password.encode('utf-8')
-    )
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Create a process pool or thread pool for CPU-bound tasks
+# We use ThreadPoolExecutor here as it's lighter and works well for IO/CPU mix
+executor = ThreadPoolExecutor()
+
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain password against its hash asynchronously.
+    Offloads CPU-intensive bcrypt work to a thread pool to avoid blocking the event loop.
+    """
+    loop = asyncio.get_running_loop()
+    
+    def _verify():
+        # 1. Try new format: Bcrypt(SHA256(password))
+        pre_hashed = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+        if bcrypt.checkpw(pre_hashed.encode('utf-8'), hashed_password.encode('utf-8')):
+            return True
+            
+        # 2. Fallback: Try legacy format: Bcrypt(password)
+        try:
+            return bcrypt.checkpw(
+                plain_password.encode('utf-8'),
+                hashed_password.encode('utf-8')
+            )
+        except ValueError:
+            return False
+
+    return await loop.run_in_executor(None, _verify)
 
 
-def hash_password(password: str) -> str:
-    """Hash a password using bcrypt"""
-    # Truncate to 72 bytes (bcrypt limit)
-    password_bytes = password.encode('utf-8')[:72]
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password_bytes, salt).decode('utf-8')
+async def hash_password(password: str) -> str:
+    """
+    Hash a password using bcrypt with SHA256 pre-hashing asynchronously.
+    """
+    loop = asyncio.get_running_loop()
+    
+    def _hash():
+        # 1. Pre-hash with SHA256
+        pre_hashed = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        
+        # 2. Hash with Bcrypt
+        salt = bcrypt.gensalt()
+        return bcrypt.hashpw(pre_hashed.encode('utf-8'), salt).decode('utf-8')
+
+    return await loop.run_in_executor(None, _hash)
 
 
 def create_access_token(

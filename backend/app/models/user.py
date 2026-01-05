@@ -71,9 +71,31 @@ class User(UsersBase):
     
     addresses = relationship("Address", back_populates="user")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    devices = relationship("UserDevice", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User(id={self.id}, email='{self.email}', type={self.user_type})>"
+
+
+class UserDevice(UsersBase):
+    """
+    User Device model for multi-device FCM token support.
+    Allows storing multiple FCM tokens per user for notifications on all devices.
+    """
+    __tablename__ = "user_devices"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    fcm_token = Column(String(500), nullable=False, unique=True, index=True)
+    device_type = Column(String(20), nullable=True)  # android, ios, web
+    device_name = Column(String(100), nullable=True)
+    last_used = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", back_populates="devices")
+    
+    def __repr__(self):
+        return f"<UserDevice(id={self.id}, user_id={self.user_id}, type='{self.device_type}')>"
 
 
 class Address(UsersBase):

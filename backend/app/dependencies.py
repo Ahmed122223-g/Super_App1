@@ -50,6 +50,15 @@ async def get_current_user(
     user = users_db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise credentials_exception
+
+    # Check token version for single session enforcement
+    token_version = payload.get("v")
+    if token_version is not None and token_version != user.token_version:
+         raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error_code": "SESSION_EXPIRED", "message": "Session expired (Logged in from another device)"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     if not user.is_active:
         raise HTTPException(

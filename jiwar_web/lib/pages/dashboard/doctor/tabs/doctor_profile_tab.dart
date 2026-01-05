@@ -1,6 +1,8 @@
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:jiwar_web/core/services/api_service.dart';
+import 'package:jiwar_web/widgets/common/secure_network_image.dart';
 import 'package:jiwar_web/core/theme/app_theme.dart';
 import 'package:jiwar_web/widgets/dialogs/error_dialog.dart';
 import 'package:jiwar_web/widgets/dialogs/success_dialog.dart';
@@ -205,7 +207,7 @@ class _DoctorProfileTabState extends State<DoctorProfileTab> {
                             border: Border.all(color: AppColors.primary.withOpacity(0.3), width: 3),
                             image: _profileImageUrl != null && _profileImageUrl!.isNotEmpty
                                 ? DecorationImage(
-                                    image: NetworkImage(ApiService.staticUrl + _profileImageUrl!),
+                                    image: secureNetworkImageProvider(ApiService.staticUrl + _profileImageUrl!),
                                     fit: BoxFit.cover,
                                   )
                                 : null,

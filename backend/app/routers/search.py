@@ -68,7 +68,7 @@ class AllProvidersResponse(BaseModel):
 
 @router.get("/all", response_model=AllProvidersResponse)
 async def get_all_providers(
-    city: str = Query(default="الواسطي"),
+    city: Optional[str] = Query(default=None),
     teacher_name: Optional[str] = Query(default=None, description="Filter teachers by name"),
     subject_id: Optional[int] = Query(default=None, description="Filter teachers by subject ID"),
     doctors_db: Session = Depends(get_doctors_db),
@@ -78,19 +78,14 @@ async def get_all_providers(
     """
     Get ALL verified providers for the map display.
     Returns doctors, pharmacies, and teachers with their coordinates.
-    Extensible for future provider types.
-    
-    Optional filters for teachers:
-    - teacher_name: Filter by teacher name (partial match)
-    - subject_id: Filter by subject/specialty ID
     """
     providers = []
     
     # Get all verified doctors
-    doctors = doctors_db.query(Doctor).join(Specialty, isouter=True).filter(
-        Doctor.city == city,
-        Doctor.is_verified == True
-    ).all()
+    doc_query = doctors_db.query(Doctor).join(Specialty, isouter=True).filter(Doctor.is_verified == True)
+    if city:
+        doc_query = doc_query.filter(Doctor.city == city)
+    doctors = doc_query.all()
     
     for d in doctors:
         providers.append(MapProvider(
@@ -112,10 +107,10 @@ async def get_all_providers(
         ))
     
     # Get all verified pharmacies
-    pharmacies = pharmacies_db.query(Pharmacy).filter(
-        Pharmacy.city == city,
-        Pharmacy.is_verified == True
-    ).all()
+    pharm_query = pharmacies_db.query(Pharmacy).filter(Pharmacy.is_verified == True)
+    if city:
+        pharm_query = pharm_query.filter(Pharmacy.city == city)
+    pharmacies = pharm_query.all()
     
     for p in pharmacies:
         providers.append(MapProvider(
@@ -135,11 +130,11 @@ async def get_all_providers(
             working_hours=p.working_hours,
         ))
     
-    # Get all verified teachers with optional filters
-    teachers_query = teachers_db.query(Teacher).join(Subject, isouter=True).filter(
-        Teacher.city == city,
-        Teacher.is_verified == True
-    )
+    # Get all verified teachers
+    teachers_query = teachers_db.query(Teacher).join(Subject, isouter=True).filter(Teacher.is_verified == True)
+    
+    if city:
+        teachers_query = teachers_query.filter(Teacher.city == city)
     
     # Apply teacher name filter
     if teacher_name:
@@ -181,11 +176,33 @@ async def get_all_providers(
         teachers_count=len(teachers)
     )
 
+def to_search_result(entity, type_str: str) -> SearchResult:
+    """Helper to convert entity to SearchResult"""
+    specialty = None
+    if type_str == "doctor" and entity.specialty:
+        specialty = entity.specialty.name_ar
+    elif type_str == "teacher" and entity.subject:
+        specialty = entity.subject.name_ar
+        
+    return SearchResult(
+        id=entity.id,
+        type=type_str,
+        name=entity.name,
+        specialty=specialty,
+        address=entity.address,
+        latitude=entity.latitude,
+        longitude=entity.longitude,
+        rating=entity.rating or 0.0,
+        total_ratings=entity.total_ratings or 0,
+        phone=entity.phone,
+        profile_image=entity.profile_image,
+        description=getattr(entity, 'description', None)
+    )
 
 @router.get("/", response_model=SearchResponse)
 async def unified_search(
     q: str = Query(..., min_length=1),
-    city: str = Query(default="الواسطي"),
+    city: Optional[str] = Query(default=None),
     type: str = Query(default="all"),
     sort: str = Query(default="rating"),  # rating, price_asc, price_desc
     min_price: Optional[float] = None,
@@ -203,7 +220,6 @@ async def unified_search(
     # Search doctors
     if type in ["all", "doctor"]:
         query = doctors_db.query(Doctor).join(Specialty, isouter=True).filter(
-            Doctor.city == city,
             Doctor.is_verified == True,
             or_(
                 Doctor.name.ilike(f"%{q}%"),
@@ -211,7 +227,9 @@ async def unified_search(
                 Specialty.name_en.ilike(f"%{q}%")
             )
         )
-        
+        if city:
+             query = query.filter(Doctor.city == city)
+             
         if min_price is not None:
              query = query.filter(Doctor.examination_fee >= min_price)
         if max_price is not None:
@@ -220,56 +238,26 @@ async def unified_search(
              query = query.filter(Doctor.rating >= min_rating)
 
         doctors = query.all()
-        
-        for d in doctors:
-            results.append(SearchResult(
-                id=d.id,
-                type="doctor",
-                name=d.name,
-                specialty=d.specialty.name_ar if d.specialty else None,
-                address=d.address,
-                latitude=d.latitude,
-                longitude=d.longitude,
-                rating=d.rating or 0.0,
-                total_ratings=d.total_ratings or 0,
-                phone=d.phone,
-                profile_image=d.profile_image,
-                description=d.description
-            ))
+        results.extend([to_search_result(d, "doctor") for d in doctors])
     
     # Search pharmacies
     if type in ["all", "pharmacy"]:
-        # Pharmacies don't usually have "price" for search context like doctors
         query = pharmacies_db.query(Pharmacy).filter(
-            Pharmacy.city == city,
             Pharmacy.is_verified == True,
             Pharmacy.name.ilike(f"%{q}%")
         )
-        
+        if city:
+             query = query.filter(Pharmacy.city == city)
+             
         if min_rating is not None:
              query = query.filter(Pharmacy.rating >= min_rating)
              
         pharmacies = query.all()
-        
-        for p in pharmacies:
-            results.append(SearchResult(
-                id=p.id,
-                type="pharmacy",
-                name=p.name,
-                specialty=None,
-                address=p.address,
-                latitude=p.latitude,
-                longitude=p.longitude,
-                rating=p.rating or 0.0,
-                total_ratings=p.total_ratings or 0,
-                phone=p.phone,
-                profile_image=p.profile_image
-            ))
+        results.extend([to_search_result(p, "pharmacy") for p in pharmacies])
     
     # Search teachers
     if type in ["all", "teacher"]:
         query = teachers_db.query(Teacher).join(Subject, isouter=True).filter(
-            Teacher.city == city,
             Teacher.is_verified == True,
             or_(
                 Teacher.name.ilike(f"%{q}%"),
@@ -277,34 +265,20 @@ async def unified_search(
                 Subject.name_en.ilike(f"%{q}%")
             )
         )
-        
+        if city:
+             query = query.filter(Teacher.city == city)
+             
         if min_rating is not None:
              query = query.filter(Teacher.rating >= min_rating)
              
         teachers = query.all()
-        
-        for t in teachers:
-            results.append(SearchResult(
-                id=t.id,
-                type="teacher",
-                name=t.name,
-                specialty=t.subject.name_ar if t.subject else None,
-                address=t.address,
-                latitude=t.latitude,
-                longitude=t.longitude,
-                rating=t.rating or 0.0,
-                total_ratings=t.total_ratings or 0,
-                phone=t.phone,
-                profile_image=t.profile_image,
-                description=t.description
-            ))
+        results.extend([to_search_result(t, "teacher") for t in teachers])
     
     # Sort
     if sort == "rating":
         results.sort(key=lambda x: x.rating, reverse=True)
     elif sort == "price_asc" and type == "doctor":
          # Only doctors have base fee in this context mainly
-         # This is complex across types, so we might only sort if comparable or filter
          pass 
 
     return SearchResponse(results=results, total=len(results))

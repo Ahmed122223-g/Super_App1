@@ -3,7 +3,7 @@ Jiwar Backend - Doctors Router
 Using separate Doctors database
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from typing import Optional, List
 
@@ -106,7 +106,8 @@ async def list_doctors(
     
     # Pagination
     total = query.count()
-    doctors = query.offset(skip).limit(limit).all()
+    # Use joinedload to prevent N+1 queries for specialty
+    doctors = query.options(joinedload(Doctor.specialty)).offset(skip).limit(limit).all()
     
     return DoctorListResponse(
         doctors=[build_doctor_response(d) for d in doctors],

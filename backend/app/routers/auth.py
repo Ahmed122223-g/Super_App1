@@ -6,6 +6,7 @@ Using multiple databases for different entities
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import Optional
 
 from app.core.database import (
     get_users_db, get_doctors_db, 
@@ -68,7 +69,7 @@ async def register_user(
     
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         name=body.name,
         phone=body.phone,
         age=body.age,
@@ -105,7 +106,7 @@ async def login_user(
     """
     user = users_db.query(User).filter(User.email == body.email).first()
     
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user or not await verify_password(body.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"error_code": "INVALID_CREDENTIALS", "message": "Invalid email or password"}
@@ -263,37 +264,59 @@ async def register_doctor(
     
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         name=body.name,
         phone=body.phone,
         user_type=UserType.DOCTOR
     )
     
-    users_db.add(user)
-    users_db.flush()  
-    
-    doctor = Doctor(
-        user_id=user.id,
-        name=body.name,
-        description=body.description,
-        specialty_id=body.specialty_id,
-        address=body.address,
-        latitude=body.latitude,
-        longitude=body.longitude,
-        phone=body.phone,
-        consultation_fee=body.consultation_fee,
-        is_verified=True
-    )
-    
-    doctors_db.add(doctor)
-    doctors_db.flush()
-    
-    user.profile_id = doctor.id
-    
-    mark_code_as_used(body.registration_code, "doctor", body.email, codes_db)
-    
-    users_db.commit()
-    doctors_db.commit()
+    try:
+        users_db.add(user)
+        users_db.flush()  
+        
+        doctor = Doctor(
+            user_id=user.id,
+            name=body.name,
+            description=body.description,
+            specialty_id=body.specialty_id,
+            address=body.address,
+            latitude=body.latitude,
+            longitude=body.longitude,
+            phone=body.phone,
+            consultation_fee=body.consultation_fee,
+            is_verified=True
+        )
+        
+        doctors_db.add(doctor)
+        doctors_db.flush()
+        
+        user.profile_id = doctor.id
+        
+        mark_code_as_used(body.registration_code, "doctor", body.email, codes_db)
+        
+        # COMMIT PHASE with Compensation Logic (Distributed Transaction Handling)
+        users_db.commit() # 1. User is saved
+        
+        try:
+            doctors_db.commit() # 2. Try to save doctor
+        except Exception as e:
+            # If Doctor save fails, DELETE the user to avoid "orphan" account
+            users_db.delete(user)
+            users_db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error_code": "REGISTRATION_FAILED", "message": "Failed to create provider profile. Account creation rolled back."}
+            )
+            
+    except Exception as e:
+        users_db.rollback()
+        doctors_db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration error: {str(e)}"
+        )
     
     access_token = create_access_token(data={"sub": str(user.id), "v": user.token_version})
     refresh_token = create_refresh_token(data={"sub": str(user.id), "v": user.token_version})
@@ -340,34 +363,55 @@ async def register_pharmacy(
     
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         name=body.name,
         phone=body.phone,
         user_type=UserType.PHARMACY
     )
     
-    users_db.add(user)
-    users_db.flush()  
-    
-    pharmacy = Pharmacy(
-        owner_id=user.id,
-        name=body.name,
-        address=body.address,
-        latitude=body.latitude,
-        longitude=body.longitude,
-        phone=body.phone,
-        is_verified=True
-    )
-    
-    pharmacies_db.add(pharmacy)
-    pharmacies_db.flush()
-    
-    user.profile_id = pharmacy.id
-    
-    mark_code_as_used(body.registration_code, "pharmacy", body.email, codes_db)
-    
-    users_db.commit()
-    pharmacies_db.commit()
+    try:
+        users_db.add(user)
+        users_db.flush()  
+        
+        pharmacy = Pharmacy(
+            owner_id=user.id,
+            name=body.name,
+            address=body.address,
+            latitude=body.latitude,
+            longitude=body.longitude,
+            phone=body.phone,
+            is_verified=True
+        )
+        
+        pharmacies_db.add(pharmacy)
+        pharmacies_db.flush()
+        
+        user.profile_id = pharmacy.id
+        
+        mark_code_as_used(body.registration_code, "pharmacy", body.email, codes_db)
+        
+        # COMMIT PHASE with Compensation Logic
+        users_db.commit() 
+        
+        try:
+            pharmacies_db.commit()
+        except Exception as e:
+            users_db.delete(user)
+            users_db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error_code": "REGISTRATION_FAILED", "message": "Failed to create provider profile. Account creation rolled back."}
+            )
+
+    except Exception as e:
+        users_db.rollback()
+        pharmacies_db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration error: {str(e)}"
+        )
     
     access_token = create_access_token(data={"sub": str(user.id), "v": user.token_version})
     refresh_token = create_refresh_token(data={"sub": str(user.id), "v": user.token_version})
@@ -423,43 +467,64 @@ async def register_teacher(
     
     user = User(
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=await hash_password(body.password),
         name=body.name,
         phone=body.phone,
         user_type=UserType.TEACHER
     )
     
-    users_db.add(user)
-    users_db.flush()  
-    
-    teacher = Teacher(
-        user_id=user.id,
-        name=body.name,
-        subject_id=body.subject_id,
-        address=body.address,
-        latitude=body.latitude,
-        longitude=body.longitude,
-        phone=body.phone,
-        is_verified=True
-    )
-    
-    teachers_db.add(teacher)
-    teachers_db.flush()
-    
-    for price_item in body.pricing:
-        pricing = TeacherPricing(
-            teacher_id=teacher.id,
-            grade_name=price_item.grade_name,
-            price=price_item.price
+    try:
+        users_db.add(user)
+        users_db.flush()  
+        
+        teacher = Teacher(
+            user_id=user.id,
+            name=body.name,
+            subject_id=body.subject_id,
+            address=body.address,
+            latitude=body.latitude,
+            longitude=body.longitude,
+            phone=body.phone,
+            is_verified=True
         )
-        teachers_db.add(pricing)
-    
-    user.profile_id = teacher.id
-    
-    mark_code_as_used(body.registration_code, "teacher", body.email, codes_db)
-    
-    users_db.commit()
-    teachers_db.commit()
+        
+        teachers_db.add(teacher)
+        teachers_db.flush()
+        
+        for price_item in body.pricing:
+            pricing = TeacherPricing(
+                teacher_id=teacher.id,
+                grade_name=price_item.grade_name,
+                price=price_item.price
+            )
+            teachers_db.add(pricing)
+        
+        user.profile_id = teacher.id
+        
+        mark_code_as_used(body.registration_code, "teacher", body.email, codes_db)
+        
+        # COMMIT PHASE with Compensation Logic
+        users_db.commit()
+        
+        try:
+            teachers_db.commit()
+        except Exception as e:
+            users_db.delete(user)
+            users_db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error_code": "REGISTRATION_FAILED", "message": "Failed to create provider profile. Account creation rolled back."}
+            )
+
+    except Exception as e:
+        users_db.rollback()
+        teachers_db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Registration error: {str(e)}"
+        )
     
     access_token = create_access_token(data={"sub": str(user.id), "v": user.token_version})
     refresh_token = create_refresh_token(data={"sub": str(user.id), "v": user.token_version})
@@ -482,13 +547,13 @@ async def change_password(
     """
     Change user password
     """
-    if not verify_password(request.old_password, current_user.password_hash):
+    if not await verify_password(request.old_password, current_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error_code": "INVALID_PASSWORD", "message": "Incorrect old password"}
         )
     
-    current_user.password_hash = hash_password(request.new_password)
+    current_user.password_hash = await hash_password(request.new_password)
     users_db.commit()
     
     return {"message": "Password changed successfully"}
@@ -511,13 +576,33 @@ def delete_account(
     if email != current_user.email:
          raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صحيح")
     
-    doctors_db.query(DoctorReservation).filter(DoctorReservation.user_id == current_user.id).delete()
+    # Soft Delete for Reservations/Orders (Cancel them instead of deleting)
+    from app.models.reservations import ReservationStatus
+    from app.models.orders import OrderStatus
+    
+    # 1. Cancel Doctor Reservations
+    doctors_db.query(DoctorReservation).filter(
+        DoctorReservation.user_id == current_user.id
+    ).update({
+        "status": ReservationStatus.CANCELLED,
+        "notes": DoctorReservation.notes + " [Account Deleted]" # Append note carefully (might need coalesce if null, let's keep it simple: just status)
+    }, synchronize_session=False)
     doctors_db.commit()
 
-    teachers_db.query(TeacherReservation).filter(TeacherReservation.user_id == current_user.id).delete()
+    # 2. Cancel Teacher Reservations
+    teachers_db.query(TeacherReservation).filter(
+        TeacherReservation.user_id == current_user.id
+    ).update({
+        "status": ReservationStatus.CANCELLED
+    }, synchronize_session=False)
     teachers_db.commit()
     
-    pharmacies_db.query(PharmacyOrder).filter(PharmacyOrder.user_id == current_user.id).delete()
+    # 3. Cancel Pharmacy Orders
+    pharmacies_db.query(PharmacyOrder).filter(
+        PharmacyOrder.user_id == current_user.id
+    ).update({
+        "status": OrderStatus.CANCELLED
+    }, synchronize_session=False)
     pharmacies_db.commit()
     
     timestamp = int(datetime.utcnow().timestamp())
@@ -537,22 +622,54 @@ def delete_account(
 # FCM Token Registration
 # ==========================================
 
+class FCMTokenRequest(BaseModel):
+    token: str
+    device_type: Optional[str] = None  # android, ios, web
+    device_name: Optional[str] = None
+
 @router.post("/fcm-token")
 def register_fcm_token(
-    token: str,
+    request: FCMTokenRequest,
     current_user: User = Depends(get_current_user),
     users_db: Session = Depends(get_users_db)
 ):
     """
     Register or update FCM token for push notifications.
+    Supports multiple devices per user.
     Called when app starts or token refreshes.
     """
-    if not token or len(token) < 10:
+    from app.models.user import UserDevice
+    
+    if not request.token or len(request.token) < 10:
         raise HTTPException(status_code=400, detail="Invalid FCM token")
     
-    current_user.fcm_token = token
+    # Check if token already exists (maybe from another user - device changed hands)
+    existing_device = users_db.query(UserDevice).filter(
+        UserDevice.fcm_token == request.token
+    ).first()
+    
+    if existing_device:
+        if existing_device.user_id == current_user.id:
+            # Same user, just update last_used
+            existing_device.device_type = request.device_type
+            existing_device.device_name = request.device_name
+            # last_used auto-updates via onupdate
+        else:
+            # Token belongs to different user - transfer ownership
+            existing_device.user_id = current_user.id
+            existing_device.device_type = request.device_type
+            existing_device.device_name = request.device_name
+    else:
+        # New token - create device entry
+        new_device = UserDevice(
+            user_id=current_user.id,
+            fcm_token=request.token,
+            device_type=request.device_type,
+            device_name=request.device_name
+        )
+        users_db.add(new_device)
+    
     users_db.commit()
     
     return {"success": True, "message": "FCM token registered"}
-
 

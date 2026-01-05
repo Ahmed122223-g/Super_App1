@@ -2,7 +2,7 @@
 Jiwar Backend - Teachers Router
 Handles teacher search and retrieval operations
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -128,6 +128,7 @@ async def get_teacher(
 @router.post("/request", response_model=ReservationResponse)
 async def request_teacher_booking(
     request: TeacherReservationRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     teachers_db: Session = Depends(get_teachers_db),
     users_db: Session = Depends(get_users_db)
@@ -161,7 +162,7 @@ async def request_teacher_booking(
     # Notify Teacher
     teacher_user = users_db.query(User).filter(User.profile_id == teacher.id, User.user_type == "teacher").first()
     if teacher_user:
-        notify_new_booking(users_db, teacher_user, request.student_name, new_reservation.id, "teacher")
+        background_tasks.add_task(notify_new_booking, users_db, teacher_user, request.student_name, new_reservation.id, "teacher")
     
     return ReservationResponse(
         id=new_reservation.id,
